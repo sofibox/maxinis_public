@@ -1,0 +1,171 @@
+#!/bin/bash
+
+#maxinis - check system security hardening using lynis (an improvement)
+#usage - /usr/local/maxicron/lynis/maxinis manual --cronjob
+# TODO Rewrite this program. This is just an alpha test code
+# Global variables
+global_start=$(date +%s.%N)
+#script_path=$(dirname $(realpath -s $0))
+script_path="$(dirname "$(readlink -f "$0")")"
+script_name=$(basename -- "$0")
+pid=(`pgrep -f $script_name`)
+pid_count=${#pid[@]}
+MYEMAIL="webmaster@sofibox.com"
+MYHOSTNAME=`/bin/hostname`
+DATE_BIN=`/usr/bin/date +%s`
+MAIL_BIN="/usr/local/bin/mail"
+RM_BIN="/bin/rm"
+MV_BIN="/bin/mv"
+LYNIS_BIN="/usr/local/lynis/./lynis"
+LYNIS_CUSTOM_PRF="$script_path/conf/custom.prf"
+LYNIS_LOG_PATH="$script_path/log"
+REPORT_FILE="$LYNIS_LOG_PATH/lynis-log.log"
+REPORT_FILE_FINAL="$LYNIS_LOG_PATH/lynis-log.$DATE_BIN.$RANDOM.log"
+RUNNING_MODE=$1 #cron / manual
+RUNNING_ARGS1=$2 # Any options
+RUNNING_ARGS2=$3
+RUNNING_ARGS3=$4
+RUNNING_ARGS4=$5
+RUNNING_ARGS5=$6
+RUNNING_ARGS6=$7
+WARNING_STATUS="OK"
+return_code=0
+WARNING_TRESH=0
+SUGGESTION_TRESH=0
+WARNING_COUNT=0
+SUGGESTION_COUNT=0
+
+mkdir -p $LYNIS_LOG_PATH
+cat /dev/null > $REPORT_FILE
+# Clear log file that is older than 3 days
+find $LYNIS_LOG_PATH -name "*.log" -mtime +3 -exec rm {} \;
+
+function is_script_running {
+
+    pgrep -lf ".[ /]$1( |\$)"
+}
+
+function check_duplicated_process {
+    if [ -z "$RUNNING_MODE" ]; then #$1
+        # No argument supplied
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: Error, no arguments supplied to run $script_name" | tee -a $REPORT_FILE
+
+        $MAIL_BIN -s "[$script_name | $WARNING_STATUS]: ${script_name^} Scan Report @ $MYHOSTNAME" $MYEMAIL < $REPORT_FILE
+        echo "[$script_name | info]: Email notification is set to [$MYEMAIL]"
+        exit 1
+    fi
+
+    [[ -z $pid ]] && echo "[$script_name | error]: Failed to get the PID" # Debug PID
+
+    if [ -f "/var/run/$script_name" ];then
+        if [[  $pid_count -gt "1" ]];then
+            WARNING_STATUS="WARNING"
+            echo "[$script_name | info]: Error, another instance of [$script_name] script is already running" | tee -a $REPORT_FILE
+            echo "[$script_name | info]: Clear all the sessions of [$script_name] at [/var/run/$script_name] to initialize session" | tee -a $REPORT_FILE
+            echo "[$script_name | info]: [$script_name] script is terminated for this session" | tee -a $REPORT_FILE
+            if ! is_script_running "$script_name" > /dev/null; then
+                echo "[$script_name | info]: [$script_name] is not running " | tee -a $REPORT_FILE
+                echo "[$script_name | info]: Performing cleanup of the last instance ..." | tee -a $REPORT_FILE
+                rm -f "/var/run/$script_name"
+                echo "[$script_name | info]: OK, an instance of [$script_name] script has been removed successfully from the lock" | tee -a $REPORT_FILE
+            else
+                echo "[$script_name | info]: [$script_name] is running as [`echo $(is_script_running $script_name)`]" | tee -a $REPORT_FILE
+            fi
+            $MAIL_BIN -s "[$script_name | $WARNING_STATUS | $RUNNING_MODE]: ${script_name^} Scan Report @ $MYHOSTNAME" $MYEMAIL < $REPORT_FILE
+            echo "[$script_name | info]: Email notification is set to [$MYEMAIL]"
+            exit 1
+        else
+            echo "-------" | tee -a $REPORT_FILE
+            echo "[$script_name | info]: Error, the last instance of [$script_name] script exited unsuccessfully" | tee -a $REPORT_FILE
+            echo "[$script_name | info]: Performing cleanup of the last instance ..." | tee -a $REPORT_FILE
+            rm -f "/var/run/$script_name"
+            echo "[$script_name | info]: OK, an instance of [$script_name] script has been removed successfully from the lock" | tee -a $REPORT_FILE
+        fi
+    else
+        echo "[$script_name | info]: OK, no duplicated process of [$script_name] is detected" | tee -a $REPORT_FILE
+    fi
+
+    echo $pid > /var/run/$script_name
+    echo "-------" >> $REPORT_FILE
+}
+
+#csf $RUNNING_ARGS $RUNNING_ARGS2 "[Manual Block from Maxiwall][IP: $RUNNING_ARGS2/$ip_country]:" "${@:3}"
+
+function scan_system {
+
+    if [ -z "$RUNNING_ARGS1" ]; then
+        echo "[$script_name | info]: Error, need next argument supplied to run $script_name (eg: maxinis cron audit system)"
+    else
+
+        echo "[$script_name | info]: ${script_name^} is checking system ... (this may take some time):" | tee -a $REPORT_FILE
+        #lynis manual --cronjob
+        echo "[$script_name | info]: Running arguments: $RUNNING_ARGS1 $RUNNING_ARGS2 $RUNNING_ARGS3 $RUNNING_ARGS4 $RUNNING_ARGS5 $RUNNING_ARGS6"
+        #$LYNIS_BIN $RUNNING_ARGS1 $RUNNING_ARGS2 $RUNNING_ARGS3 $RUNNING_ARGS4 $RUNNING_ARGS5 $RUNNING_ARGS6 | tee -a $REPORT_FILE
+        bash -o pipefail -c "$LYNIS_BIN --auditor 'Sofibox' --profile $LYNIS_CUSTOM_PRF $RUNNING_ARGS1 $RUNNING_ARGS2 $RUNNING_ARGS3 $RUNNING_ARGS4 $RUNNING_ARGS5 $RUNNING_ARGS6 | tee -a $REPORT_FILE"
+        return_code=$?
+    fi
+    echo "[$script_name | info]: ${script_name^} system scan return code: [$return_code]" | tee -a $REPORT_FILE
+    if [ $return_code == 0 ]; then
+        echo "[$script_name | info]: [$return_code] OK, Scan finished successfully" | tee -a $REPORT_FILE
+    elif [ $return_code == 1 ]; then
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: [$return_code] Error, Fatal error reported during scan" | tee -a $REPORT_FILE
+    elif [ $return_code == 64 ]; then
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: [$return_code] Error, An unknown parameter is used, or incomplete" | tee -a $REPORT_FILE
+    elif [ $return_code == 65 ]; then
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: [$return_code] Error, Incorrect data encountered" | tee -a $REPORT_FILE
+    elif [ $return_code == 66 ]; then
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: [$return_code] Error, Can't open file or directory" | tee -a $REPORT_FILE
+    elif [ $return_code == 78 ]; then
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: [$return_code] Warning, Lynis found 1 or more warnings" | tee -a $REPORT_FILE
+    else
+        WARNING_STATUS="WARNING"
+        echo "[$script_name | info]: [$return_code] Error, unknown return code" | tee -a $REPORT_FILE
+    fi
+}
+
+if [[ "$1" == "--help" || "$1" == "help" ]]; then
+    echo "========================================"
+    echo "show details TEST_ID | show lynis show details [eg: ./maxinis manual show details AUTH-9230]"
+    echo "========================================"
+    exit 1
+
+fi
+
+check_duplicated_process
+scan_system
+cat $REPORT_FILE > $REPORT_FILE_FINAL
+echo "---------" | tee -a $REPORT_FILE_FINAL
+# Start lynis output formatting
+warning=$(grep -c Warnings $REPORT_FILE)
+if [ "$warning" -gt 0 ]; then
+  wc=$(grep Warnings $REPORT_FILE | awk '{split($2,a,")"); print substr(a[1],2)}') # Total count of warning
+  WARNING_COUNT=$wc
+  if [ "$wc" -gt "$WARNING_TRESH" ]; then
+    WARNING_STATUS="WARNING"
+    sed -n '/^  Warnings/,/^  Suggestions/p' $REPORT_FILE | grep -Fv "  Suggestions" | tee -a $REPORT_FILE_FINAL
+  fi
+fi
+suggestion=$(grep -c Suggestions $REPORT_FILE)
+if [ "$suggestion" -gt 0 ]; then
+  sc=$(grep Suggestions $REPORT_FILE | awk '{split($2,a,")"); print substr(a[1],2)}') # Total count of suggestion
+  SUGGESTION_COUNT=$sc
+  if [ "$sc" -gt "$SUGGESTION_TRESH" ]; then
+    WARNING_STATUS="WARNING"
+    sed -n '/^  Suggestions/,/^========/p' $REPORT_FILE | grep -Fv "========" | tee -a $REPORT_FILE_FINAL
+  fi
+fi
+echo "---------" | tee -a $REPORT_FILE_FINAL
+# End lynis output formatting
+
+echo "[$script_name | info]: Scan status: $WARNING_STATUS" | tee -a $REPORT_FILE_FINAL
+echo "[$script_name | info]: Log file is located at $REPORT_FILE_FINAL" | tee -a $REPORT_FILE_FINAL
+if [ "${WARNING_STATUS}" == "WARNING" ]; then
+    $MAIL_BIN -s "[$script_name | $WARNING_STATUS | Warning: $WARNING_COUNT, Suggestion: $SUGGESTION_COUNT]: ${script_name^} Scan Report @ $MYHOSTNAME" $MYEMAIL < $REPORT_FILE_FINAL
+fi
+rm -f "/var/run/$script_name"
